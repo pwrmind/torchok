@@ -1,21 +1,18 @@
-# saas_config.yaml
 market_params:
   budget: 120000.0
-  cost_per_lead_avg: 500.0
-  cost_per_lead_std: 150.0
+  cpc_avg: 300.0
+  cpc_stdev: 80.0
   scenarios_count: 500000
 
 product_params:
-  conversion_to_lead_min: 0.02
-  conversion_to_lead_max: 0.05
-  conversion_to_sale_min: 0.10
-  conversion_to_sale_max: 0.25
+  conversion_min: 0.005
+  conversion_max: 0.025
   
-  base_cogs: 50.0  # Серверы, поддержка
+  base_cogs: 50.0
   tax_rate: 0.06
   
-  subscription_months_min: 3.0
-  subscription_months_max: 24.0
+  repeat_sessions_min: 3.0
+  repeat_sessions_max: 24.0
   
   price_range_min: 990
   price_range_max: 4990

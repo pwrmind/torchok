@@ -1,4 +1,4 @@
-# universal_economy_analyzer.py
+# main_final.py
 import torch
 import click
 import yaml
@@ -69,7 +69,7 @@ def run_universal_economy(config, plot, optimize, scenarios):
     if 'repeat_sessions_min' in p_p:
         repeat_field = generate_repeat_business(p_p, scenarios_count, device, business_type)
     elif 'repeat_purchases_min' in p_p:
-        repeat_field = generate_repeat_purchases(p_p, scenarios_count, device)
+        repeat_field = generate_repeat_business(p_p, scenarios_count, device, business_type)
     elif 'subscription_months_min' in p_p:
         repeat_field = generate_subscription(p_p, scenarios_count, device)
     else:
@@ -99,7 +99,7 @@ def run_universal_economy(config, plot, optimize, scenarios):
         base_cogs = p_p.get('base_cogs', 0.0)
         
         # Учитываем скидки на опт/пакеты для разных бизнес-моделей
-        if business_type in ['detailing', 'psychology'] and 'repeat_sessions_min' in p_p:
+        if business_type in ['detailing', 'psychology'] and torch.max(repeat_field) > 1:
             # Скидка за пакеты услуг
             package_discount = torch.where(
                 repeat_field >= 3,
@@ -159,7 +159,7 @@ def run_universal_economy(config, plot, optimize, scenarios):
     display_recommendations(
         business_type, success_rate, ltv_cac_ratio[optimal_idx].item(),
         price_field[optimal_idx].item(), realistic_profits, 
-        profits[optimal_idx].item(), budget
+        profits[optimal_idx].item(), budget, p_p
     )
     
     # --- ВИЗУАЛИЗАЦИЯ ---
@@ -175,7 +175,7 @@ def run_universal_economy(config, plot, optimize, scenarios):
         run_optimization(
             business_type, budget, revenue, effective_budget,
             realistic_mask, price_field, conv_field, cpc_field,
-            repeat_field, p_p
+            repeat_field, p_p, realistic_profits
         )
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
@@ -246,10 +246,25 @@ def generate_price(product_params, scenarios, device, business_type):
     price = torch.normal(price_mode, price_std, size=(scenarios,), device=device)
     return torch.clamp(price, min=price_min, max=price_max)
 
+def generate_ticket(product_params, scenarios, device):
+    """Генерация среднего чека"""
+    ticket_min = product_params['avg_ticket_min']
+    ticket_max = product_params['avg_ticket_max']
+    ticket_mode = product_params.get('avg_ticket_mode', (ticket_min + ticket_max) / 2)
+    
+    if 'ticket_std' in product_params:
+        ticket_std = product_params['ticket_std']
+    else:
+        ticket_std = (ticket_max - ticket_min) / 6
+    
+    ticket = torch.normal(ticket_mode, ticket_std, size=(scenarios,), device=device)
+    return torch.clamp(ticket, min=ticket_min, max=ticket_max)
+
 def generate_repeat_business(product_params, scenarios, device, business_type):
     """Генерация повторных покупок"""
-    repeat_min = product_params['repeat_sessions_min']
-    repeat_max = product_params['repeat_sessions_max']
+    # Используем оба возможных ключа
+    repeat_min = product_params.get('repeat_sessions_min') or product_params.get('repeat_purchases_min')
+    repeat_max = product_params.get('repeat_sessions_max') or product_params.get('repeat_purchases_max')
     
     if business_type == 'detailing':
         # Для детейлинга - большинство 1-2 посещения, некоторые постоянные
@@ -260,12 +275,49 @@ def generate_repeat_business(product_params, scenarios, device, business_type):
         repeat_mean = (repeat_min + repeat_max) / 2
         repeat_std = (repeat_max - repeat_min) / 6
         repeat = torch.normal(repeat_mean, repeat_std, size=(scenarios,), device=device)
+    elif business_type == 'low_ticket_service':
+        # Для кофейни и подобных - нормальное распределение
+        repeat_mean = (repeat_min + repeat_max) / 2
+        repeat_std = (repeat_max - repeat_min) / 8
+        repeat = torch.normal(repeat_mean, repeat_std, size=(scenarios,), device=device)
     else:
         # Равномерное распределение
         repeat = torch.distributions.Uniform(repeat_min, repeat_max).sample((scenarios,)).to(device)
     
     repeat = torch.clamp(repeat, min=repeat_min, max=repeat_max)
     return torch.round(repeat)
+
+def generate_subscription(product_params, scenarios, device):
+    """Генерация длительности подписки"""
+    months_min = product_params['subscription_months_min']
+    months_max = product_params['subscription_months_max']
+    
+    # Экспоненциальное распределение для подписок (большинство короткие)
+    lambda_param = 0.5
+    subscription = torch.distributions.Exponential(lambda_param).sample((scenarios,)).to(device)
+    subscription = subscription * (months_max - months_min) + months_min
+    return torch.clamp(subscription, min=months_min, max=months_max)
+
+def generate_cost_per_lead(market_params, scenarios, device):
+    """Для бизнесов с оплатой за лид"""
+    cost_avg = market_params['cost_per_lead_avg']
+    cost_std = market_params.get('cost_per_lead_std', cost_avg * 0.3)
+    cost = torch.normal(cost_avg, cost_std, size=(scenarios,), device=device)
+    return torch.clamp(cost, min=cost_avg*0.5, max=cost_avg*1.5)
+
+def generate_two_stage_conversion(product_params, scenarios, device):
+    """Для двухэтапной воронки (клик → лид → продажа)"""
+    lead_conv = torch.distributions.Uniform(
+        product_params['conversion_to_lead_min'],
+        product_params['conversion_to_lead_max']
+    ).sample((scenarios,)).to(device)
+    
+    sale_conv = torch.distributions.Uniform(
+        product_params['conversion_to_sale_min'],
+        product_params['conversion_to_sale_max']
+    ).sample((scenarios,)).to(device)
+    
+    return lead_conv * sale_conv
 
 def filter_realistic_scenarios(conv_field, cpc_field, sales, profits, business_type, product_params):
     """Фильтрация реалистичных сценариев"""
@@ -282,6 +334,13 @@ def filter_realistic_scenarios(conv_field, cpc_field, sales, profits, business_t
             (cpc_field >= 80) & (cpc_field <= 400) &
             (sales >= 0.5) &
             (profits > -100000) & (profits < 300000)
+        )
+    elif business_type == 'subscription':
+        return (
+            (conv_field >= 0.005) & (conv_field <= 0.1) &
+            (cpc_field >= 50) & (cpc_field <= 500) &
+            (sales >= 0.5) &
+            (profits > -50000) & (profits < 200000)
         )
     else:
         return (
@@ -345,14 +404,15 @@ def display_results(project_name, business_type, realistic_count, success_rate,
     click.echo(f"  Конверсия: {conv_field[optimal_idx].item()*100:.2f}%")
     click.echo(f"  CPC: {cpc_field[optimal_idx].item():.0f} руб.")
     
-    if 'repeat_sessions_min' in product_params:
+    if torch.max(repeat_field) > 1:
         click.echo(f"  Повторные продажи: {repeat_field[optimal_idx].item():.1f}")
     
     click.echo(f"  LTV/CAC: {ltv_cac_ratio[optimal_idx].item():.2f}")
     click.echo(f"  Маржа на единицу: {unit_margin[optimal_idx].item():,.0f} руб.")
 
 def display_recommendations(business_type, success_rate, ltv_cac, 
-                           optimal_price, realistic_profits, optimal_profit, budget):
+                           optimal_price, realistic_profits, optimal_profit, 
+                           budget, product_params):
     """Вывод рекомендаций в зависимости от типа бизнеса"""
     
     click.secho(f"\n💡 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ:", fg='cyan', bold=True)
@@ -382,6 +442,32 @@ def display_recommendations(business_type, success_rate, ltv_cac,
             click.echo("    1. Оптимизируйте воронку продаж")
             click.echo("    2. Внедрите пакеты сессий со скидкой")
             click.echo("    3. Развивайте узкую специализацию")
+    
+    elif business_type == 'subscription':
+        click.secho("  🔄 SAAS/ПОДПИСКА:", fg='green', bold=True)
+        if success_rate < 40:
+            click.secho("    ⚠️  ВЫСОКИЙ РИСК", fg='yellow')
+            click.echo("    1. Снижайте стоимость привлечения (CAC)")
+            click.echo("    2. Улучшайте конверсию на сайте")
+            click.echo("    3. Тестируйте разные ценовые планы")
+        else:
+            click.secho("    ✅ УСТОЙЧИВАЯ МОДЕЛЬ", fg='green')
+            click.echo("    1. Увеличивайте LTV через удержание")
+            click.echo("    2. Добавляйте upsell/cross-sell")
+            click.echo("    3. Автоматизируйте онбординг")
+    
+    elif business_type == 'low_ticket_service':
+        click.secho("  ☕ СЕРВИС С НИЗКИМ ЧЕКОМ:", fg='orange', bold=True)
+        if success_rate < 50:
+            click.secho("    ⚠️  СРЕДНИЙ РИСК", fg='yellow')
+            click.echo("    1. Увеличивайте частоту покупок")
+            click.echo("    2. Повышайте средний чек")
+            click.echo("    3. Оптимизируйте операционные расходы")
+        else:
+            click.secho("    ✅ УСТОЙЧИВАЯ МОДЕЛЬ", fg='green')
+            click.echo("    1. Масштабируйте географию")
+            click.echo("    2. Внедряйте программы лояльности")
+            click.echo("    3. Автоматизируйте процессы")
     
     else:
         if success_rate < 30:
@@ -470,7 +556,8 @@ def create_visualization(project_name, business_type, realistic_mask,
     business_titles = {
         'detailing': 'Детейлинг-центр',
         'psychology': 'Психологическая практика',
-        'subscription': 'SaaS/Подписка'
+        'subscription': 'SaaS/Подписка',
+        'low_ticket_service': 'Сервис с низким чеком'
     }
     
     title = business_titles.get(business_type, 'Бизнес-анализ')
@@ -484,7 +571,7 @@ def create_visualization(project_name, business_type, realistic_mask,
 
 def run_optimization(business_type, budget, revenue, effective_budget,
                     realistic_mask, price_field, conv_field, cpc_field,
-                    repeat_field, product_params):
+                    repeat_field, product_params, realistic_profits):
     """Оптимизация параметров"""
     
     click.secho(f"\n🔍 АНАЛИЗ ОПТИМИЗАЦИИ:", fg='cyan', bold=True)
@@ -514,54 +601,6 @@ def run_optimization(business_type, budget, revenue, effective_budget,
     else:
         click.secho(f"  ⚠️  Даже при {budgets[-1]:,.0f} руб. успешность < 50%", fg='yellow')
         click.echo("     • Необходимо улучшать конверсию или снижать стоимость привлечения")
-
-# === ФУНКЦИИ ДЛЯ ДРУГИХ БИЗНЕС-МОДЕЛЕЙ ===
-
-def generate_cost_per_lead(market_params, scenarios, device):
-    """Для бизнесов с оплатой за лид"""
-    cost_avg = market_params['cost_per_lead_avg']
-    cost_std = market_params.get('cost_per_lead_std', cost_avg * 0.3)
-    cost = torch.normal(cost_avg, cost_std, size=(scenarios,), device=device)
-    return torch.clamp(cost, min=cost_avg*0.5, max=cost_avg*1.5)
-
-def generate_ticket(product_params, scenarios, device):
-    """Генерация среднего чека"""
-    ticket_min = product_params['avg_ticket_min']
-    ticket_max = product_params['avg_ticket_max']
-    ticket_mode = product_params.get('avg_ticket_mode', (ticket_min + ticket_max) / 2)
-    
-    if 'ticket_std' in product_params:
-        ticket_std = product_params['ticket_std']
-    else:
-        ticket_std = (ticket_max - ticket_min) / 6
-    
-    ticket = torch.normal(ticket_mode, ticket_std, size=(scenarios,), device=device)
-    return torch.clamp(ticket, min=ticket_min, max=ticket_max)
-
-def generate_subscription(product_params, scenarios, device):
-    """Генерация длительности подписки"""
-    months_min = product_params['subscription_months_min']
-    months_max = product_params['subscription_months_max']
-    
-    # Экспоненциальное распределение для подписок (большинство короткие)
-    lambda_param = 0.5
-    subscription = torch.distributions.Exponential(lambda_param).sample((scenarios,)).to(device)
-    subscription = subscription * (months_max - months_min) + months_min
-    return torch.clamp(subscription, min=months_min, max=months_max)
-
-def generate_two_stage_conversion(product_params, scenarios, device):
-    """Для двухэтапной воронки (клик → лид → продажа)"""
-    lead_conv = torch.distributions.Uniform(
-        product_params['conversion_to_lead_min'],
-        product_params['conversion_to_lead_max']
-    ).sample((scenarios,)).to(device)
-    
-    sale_conv = torch.distributions.Uniform(
-        product_params['conversion_to_sale_min'],
-        product_params['conversion_to_sale_max']
-    ).sample((scenarios,)).to(device)
-    
-    return lead_conv * sale_conv
 
 if __name__ == '__main__':
     run_universal_economy()
