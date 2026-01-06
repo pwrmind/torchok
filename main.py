@@ -1,728 +1,115 @@
-# main_final.py
 import torch
-import click
 import yaml
-import matplotlib.pyplot as plt
-import numpy as np
-from pathlib import Path
-import warnings
-warnings.filterwarnings('ignore')
+import os
 
-@click.command()
-@click.option('--config', required=True, help='Путь к YAML файлу конфигурации')
-@click.option('--plot', is_flag=True, help='Сгенерировать график')
-@click.option('--optimize', is_flag=True, help='Найти оптимальные параметры')
-@click.option('--scenarios', type=int, default=500000, help='Количество сценариев')
-def run_universal_economy(config, plot, optimize, scenarios):
-    """
-    Универсальный экономический симулятор для бизнес-моделей
+def generate_expert_advice(m, opt_p, max_p, vol, max_sessions, cpa, ltv):
+    """Интеллектуальная интерпретация результатов расчетов."""
+    advice = []
+    utilization = vol / max_sessions
     
-    Поддерживает различные бизнес-модели:
-    - Психологическая практика
-    - Детейлинг-центр
-    - Кофейня
-    - SaaS
-    - и другие сервисы
-    """
-    config_path = Path(config)
-    project_name = config_path.stem
+    # 1. Анализ пропускной способности (Capacity)
+    if utilization >= 0.98:
+        advice.append("[!] ПЕРЕГРУЗКА: График заполнен на 100%. Рост возможен только через "
+                      "повышение цены или сокращение сессии до 45-50 минут.")
+    elif utilization < 0.50:
+        advice.append("[?] НЕДОЗАГРУЗКА: Простой более 50%. Математический оптимум завышен. "
+                      "Рекомендуется снизить цену на 15-20% для стимуляции объема.")
 
-    with open(config, 'r', encoding='utf-8') as f:
-        params = yaml.safe_load(f)
-    
-    m_p, p_p = params['market_params'], params['product_params']
-    
-    # Определяем бизнес-тип по параметрам конфига
-    business_type = identify_business_type(m_p, p_p)
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    scenarios_count = min(int(m_p.get('scenarios_count', scenarios)), 1000000)
+    # 2. Маркетинговая эффективность (CPA vs LTV)
+    if cpa > (ltv * 0.45):
+        advice.append("[!] РИСК МАРКЕТИНГА: CPA превышает 45% от LTV. Вы работаете на рекламную площадку. "
+                      "Необходимо срочно улучшать конверсию сайта или искать органику.")
+    elif cpa < (ltv * 0.15):
+        advice.append("[+] ЭФФЕКТИВНОСТЬ: CPA ниже 15% LTV. Реклама сверхприбыльна. "
+                      "Рекомендуется увеличить бюджет на 30-50%.")
 
-    # --- УНИВЕРСАЛЬНАЯ ГЕНЕРАЦИЯ ПАРАМЕТРОВ ---
-    
-    # 1. CPC/стоимость лида
-    if 'cpc_avg' in m_p:
-        cpc_field = generate_cpc(m_p, scenarios_count, device)
-    elif 'cost_per_lead_avg' in m_p:
-        cpc_field = generate_cost_per_lead(m_p, scenarios_count, device)
-    else:
-        cpc_field = torch.full((scenarios_count,), 100.0, device=device)
-    
-    # 2. Конверсия
-    if 'conversion_min' in p_p and 'conversion_max' in p_p:
-        conv_field = generate_conversion(p_p, scenarios_count, device, business_type)
-    elif 'conversion_to_lead_min' in p_p and 'conversion_to_lead_max' in p_p:
-        # Для двухэтапной воронки
-        conv_field = generate_two_stage_conversion(p_p, scenarios_count, device)
-    else:
-        conv_field = torch.full((scenarios_count,), 0.02, device=device)
-    
-    # 3. Цена/чек
-    if 'price_range_min' in p_p:
-        price_field = generate_price(p_p, scenarios_count, device, business_type)
-    elif 'avg_ticket_min' in p_p:
-        price_field = generate_ticket(p_p, scenarios_count, device)
-    else:
-        price_field = torch.full((scenarios_count,), 5000.0, device=device)
-    
-    # 4. Повторные покупки/LTV
-    if 'repeat_sessions_min' in p_p or 'repeat_purchases_min' in p_p:
-        repeat_field = generate_repeat_business(p_p, scenarios_count, device, business_type)
-    elif 'subscription_months_min' in p_p:
-        repeat_field = generate_subscription(p_p, scenarios_count, device)
-    else:
-        repeat_field = torch.ones((scenarios_count,), device=device)
-    
-    # 5. Бюджет
-    budget = m_p['budget']
-    effective_budget = budget * m_p.get('budget_efficiency', 0.85)
+    # 3. Финансовая устойчивость
+    profit_buffer = max_p / m['fixed_costs'] if m['fixed_costs'] > 0 else 0
+    if profit_buffer < 1.2:
+        advice.append("[X] НЕУСТОЙЧИВОСТЬ: Прибыль едва покрывает расходы (буфер < 20%). "
+                      "Любое колебание CPC приведет к убыткам.")
+    elif profit_buffer > 4.0:
+        advice.append("[+++] ЭКСПАНСИЯ: Модель крайне прибыльна. Пора нанимать ассистента "
+                      "или масштабировать личный бренд.")
 
-    # --- УНИВЕРСАЛЬНЫЙ РАСЧЕТ ЭКОНОМИКИ ---
-    with torch.inference_mode():
-        # Лиды/трафик
-        if 'cpc_avg' in m_p:
-            traffic = effective_budget / cpc_field
-        else:
-            traffic = effective_budget / cpc_field  # cost_per_lead
-        
-        # Конверсия в продажи
-        sales = traffic * conv_field
-        sales = torch.clamp(sales, min=0.5)
-        
-        # Общий объем (с учетом повторных)
-        total_volume = sales * repeat_field
-        
-        # Маржа
-        tax_rate = p_p.get('tax_rate', 0.06)
-        base_cogs = p_p.get('base_cogs', 0.0)
-        
-        # Учитываем скидки на опт/пакеты для разных бизнес-моделей
-        if business_type in ['detailing', 'psychology'] and torch.max(repeat_field) > 1:
-            # Скидка за пакеты услуг
-            package_discount = torch.where(
-                repeat_field >= 3,
-                1.0 - 0.1 * torch.floor(repeat_field / 3),  # Исправлено: floor вместо //
-                torch.ones_like(repeat_field)
-            )
-            unit_margin = (price_field * (1 - tax_rate) - base_cogs) * package_discount
-        elif business_type == 'subscription':
-            # Для подписок - другая модель
-            unit_margin = price_field * (1 - tax_rate) - base_cogs
-        else:
-            unit_margin = price_field * (1 - tax_rate) - base_cogs
-        
-        # Прибыль
-        revenue = total_volume * unit_margin
-        profits = revenue - effective_budget
-        
-        # Метрики
-        cac = effective_budget / sales
-        ltv = repeat_field * unit_margin
-        ltv_cac_ratio = ltv / torch.clamp(cac, min=1.0)
-        
-        # ROMI (Return on Marketing Investment)
-        romi = (revenue - effective_budget) / effective_budget
+    return advice
 
-    # --- АНАЛИЗ И ВЫВОД ---
-    realistic_mask = filter_realistic_scenarios(
-        conv_field, cpc_field, sales, profits, 
-        business_type, p_p
-    )
-    
-    if not realistic_mask.any():
-        click.secho("❌ Нет реалистичных сценариев!", fg='red')
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+def run_optimization():
+    # Загрузка конфигурации
+    if not os.path.exists('unit_economics.yaml'):
+        print("Ошибка: Создайте файл unit_economics.yaml")
         return
-    
-    # Статистика
-    realistic_profits = profits[realistic_mask]
-    realistic_count = realistic_mask.sum().item()
-    success_rate = (realistic_profits > 0).sum().item() / realistic_count * 100
-    median_profit = torch.median(realistic_profits).item()
-    
-    # Находим оптимальный сценарий
-    optimal_idx = find_optimal_scenario(
-        profits, ltv_cac_ratio, price_field, 
-        realistic_mask, business_type
-    )
-    
-    # Проверяем, что оптимальный индекс существует
-    if optimal_idx is None or optimal_idx >= len(price_field):
-        click.secho("❌ Не удалось найти оптимальный сценарий!", fg='red')
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
-        return
-    
-    # --- ВЫВОД РЕЗУЛЬТАТОВ ---
-    display_results(
-        project_name, business_type, realistic_count, success_rate,
-        median_profit, optimal_idx, price_field, profits, conv_field,
-        cpc_field, repeat_field, ltv_cac_ratio, unit_margin, budget,
-        m_p, p_p
-    )
-    
-    # Рекомендации для конкретного бизнес-типа
-    display_recommendations(
-        business_type, success_rate, ltv_cac_ratio[optimal_idx].item(),
-        price_field[optimal_idx].item(), realistic_profits, 
-        profits[optimal_idx].item(), budget, p_p
-    )
-    
-    # --- ВИЗУАЛИЗАЦИЯ ---
-    if plot:
-        create_visualization(
-            project_name, business_type, realistic_mask,
-            price_field, profits, conv_field, cpc_field,
-            repeat_field, ltv_cac_ratio, budget
-        )
-    
-    # --- ОПТИМИЗАЦИЯ ---
-    if optimize:
-        run_optimization(
-            business_type, budget, revenue, effective_budget,
-            realistic_mask, price_field, conv_field, cpc_field,
-            repeat_field, p_p, realistic_profits
-        )
-    
-    # Очистка памяти
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+    with open('unit_economics.yaml', 'r', encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
+        m = cfg['current_metrics']
+        o = cfg['optimization_params']
 
-def identify_business_type(market_params, product_params):
-    """Определяем тип бизнеса по параметрам"""
-    price_min = product_params.get('price_range_min', 0)
-    price_max = product_params.get('price_range_max', 0)
-    base_cogs = product_params.get('base_cogs', 0)
-    
-    # Проверяем специфические параметры для разных бизнес-моделей
-    if 'subscription_months_min' in product_params:
-        return 'subscription'
-    elif 'conversion_to_lead_min' in product_params and 'conversion_to_lead_max' in product_params:
-        return 'targetology'
-    elif 'avg_ticket_min' in product_params:
-        return 'ecommerce'
-    elif product_params.get('tax_rate', 0) > 0.3 and 499 <= price_max <= 2499:
-        return 'indie_dev'
-    elif price_max > 50000:
-        return 'detailing'
-    elif price_max > 10000 and price_min < 1000:
-        return 'premium_service'
-    elif price_max <= 1000 and product_params.get('repeat_sessions_min', 0) > 5:
-        return 'cafe'
-    elif price_max < 5000:
-        return 'low_ticket_service'
-    elif base_cogs > 5000:
-        return 'high_cogs_service'
-    else:
-        return 'psychology'
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def generate_cpc(market_params, scenarios, device):
-    """Генерация CPC"""
-    cpc_avg = market_params['cpc_avg']
-    cpc_std = market_params['cpc_stdev']
-    cpc_low = max(50.0, cpc_avg - 2*cpc_std)
-    cpc_high = min(500.0, cpc_avg + 2*cpc_std)
+    # Константы на устройство
+    cpc = torch.tensor(m['avg_cpc'], device=device)
+    base_cr = torch.tensor(m['base_cr'], device=device)
+    base_p = torch.tensor(m['base_price'], device=device)
+    budget = torch.tensor(m['ad_budget'], device=device)
+    fixed_costs = torch.tensor(m['fixed_costs'], device=device)
     
-    cpc = torch.normal(cpc_avg, cpc_std, size=(scenarios,), device=device)
-    return torch.clamp(cpc, min=cpc_low, max=cpc_high)
+    elasticity = o['demand_elasticity']
+    ltv_factor = o.get('avg_sessions_per_client', 1.0)
+    opp_cost = torch.tensor(o.get('opportunity_cost_per_hour', 0.0), device=device)
+    
+    max_sessions = m['max_hours'] / m['session_duration']
+    max_sessions_t = torch.tensor(max_sessions, device=device)
 
-def generate_conversion(product_params, scenarios, device, business_type):
-    """Генерация конверсии в зависимости от типа бизнеса"""
-    conv_min = product_params['conversion_min']
-    conv_max = product_params['conversion_max']
-    
-    if business_type in ['detailing', 'premium_service']:
-        # Для премиальных услуг - пик на нижних значениях
-        alpha, beta = 1.5, 6.0
-        conv_beta = torch.distributions.Beta(alpha, beta).sample((scenarios,)).to(device)
-    elif business_type == 'cafe':
-        # Для кофейни - более высокие конверсии
-        alpha, beta = 3.0, 2.0
-        conv_beta = torch.distributions.Beta(alpha, beta).sample((scenarios,)).to(device)
-    else:
-        # Для остальных - более равномерное распределение
-        alpha, beta = 2.0, 4.0
-        conv_beta = torch.distributions.Beta(alpha, beta).sample((scenarios,)).to(device)
-    
-    conv = conv_min + conv_beta * (conv_max - conv_min)
-    return torch.clamp(conv, min=conv_min*0.8, max=conv_max*1.2)
+    # Генерация цен на GPU
+    prices = torch.linspace(o['min_price'], o['max_price'], steps=o['steps'], device=device)
 
-def generate_price(product_params, scenarios, device, business_type):
-    """Генерация цены"""
-    price_min = product_params['price_range_min']
-    price_max = product_params['price_range_max']
+    # --- Векторизованные вычисления на CUDA ---
     
-    if business_type == 'detailing':
-        # Для детейлинга - пик на 40-60k
-        price_mode = (price_min + price_max) / 2
-        price_std = (price_max - price_min) / 4
-    elif business_type == 'psychology':
-        # Для психологов - пик на 3500-4500
-        price_mode = 4000.0
-        price_std = 1000.0
-    elif business_type == 'cafe':
-        # Для кофейни - пик на 400-600
-        price_mode = (price_min + price_max) / 2
-        price_std = (price_max - price_min) / 6
-    elif business_type == 'indie_dev':
-        # Для инди-игр - пик на нижней части диапазона
-        price_mode = price_min + (price_max - price_min) * 0.3
-        price_std = (price_max - price_min) / 5
-    elif business_type == 'targetology':
-        # Для таргетологов - равномерное распределение
-        return torch.distributions.Uniform(price_min, price_max).sample((scenarios,)).to(device)
-    else:
-        price_mode = (price_min + price_max) / 2
-        price_std = (price_max - price_min) / 6
+    # 1. Спрос с учетом эластичности
+    sim_cr = base_cr * (base_p / prices) ** elasticity
     
-    price = torch.normal(price_mode, price_std, size=(scenarios,), device=device)
-    return torch.clamp(price, min=price_min, max=price_max)
+    # 2. Воронка продаж с учетом LTV
+    potential_clients = (budget / cpc) * sim_cr
+    total_sessions_demanded = potential_clients * ltv_factor
+    
+    # 3. Реализованный объем с ограничением по часам
+    actual_sessions = torch.clamp(total_sessions_demanded, max=max_sessions_t)
+    
+    # 4. Экономика со штрафом за простой
+    revenue = actual_sessions * prices
+    idle_penalty = (max_sessions_t - actual_sessions) * opp_cost
+    
+    # Оптимизируем прибыль за вычетом штрафа за пустые часы
+    target_profit = revenue - budget - fixed_costs - idle_penalty
 
-def generate_ticket(product_params, scenarios, device):
-    """Генерация среднего чека"""
-    ticket_min = product_params['avg_ticket_min']
-    ticket_max = product_params['avg_ticket_max']
-    ticket_mode = product_params.get('avg_ticket_mode', (ticket_min + ticket_max) / 2)
+    # --- Получение результатов ---
+    best_idx = torch.argmax(target_profit)
+    opt_p = prices[best_idx].item()
     
-    if 'ticket_std' in product_params:
-        ticket_std = product_params['ticket_std']
-    else:
-        ticket_std = (ticket_max - ticket_min) / 6
-    
-    ticket = torch.normal(ticket_mode, ticket_std, size=(scenarios,), device=device)
-    return torch.clamp(ticket, min=ticket_min, max=ticket_max)
+    # Фактические показатели в точке оптимума
+    final_vol = actual_sessions[best_idx].item()
+    final_profit = (revenue[best_idx] - budget - fixed_costs).item()
+    final_cpa = (m['ad_budget'] / (final_vol / ltv_factor)) if final_vol > 0 else 0
+    final_ltv = opt_p * ltv_factor
 
-def generate_repeat_business(product_params, scenarios, device, business_type):
-    """Генерация повторных покупок"""
-    # Используем оба возможных ключа с значениями по умолчанию
-    repeat_min = product_params.get('repeat_sessions_min') or product_params.get('repeat_purchases_min') or 1.0
-    repeat_max = product_params.get('repeat_sessions_max') or product_params.get('repeat_purchases_max') or 1.0
+    # --- Отчет ---
+    print(f"\n" + "="*65)
+    print(f"   ЭКСПЕРТНЫЙ АНАЛИЗ ЮНИТ-ЭКОНОМИКИ (CUDA 2026)")
+    print(f"="*65)
+    print(f"Оптимальная цена:      {opt_p:,.0f} руб./сессия")
+    print(f"Чистая прибыль:        {final_profit:,.0f} руб./мес.")
+    print(f"Загрузка:              {final_vol:,.1f} сессий ({final_vol/max_sessions*100:,.1f}%)")
+    print(f"Стоимость привлечения: {final_cpa:,.0f} руб. (CPA)")
+    print(f"Выручка с клиента:     {final_ltv:,.0f} руб. (LTV)")
+    print(f"Расчетное устройство:  {str(device).upper()}")
+    print(f"-"*65)
+    print(f"АНАЛИТИЧЕСКИЕ ВЫВОДЫ:")
     
-    if business_type == 'detailing':
-        # Для детейлинга - большинство 1-2 посещения, некоторые постоянные
-        geom_p = 0.3
-        repeat = torch.distributions.Geometric(geom_p).sample((scenarios,)).to(device) + 1
-    elif business_type == 'psychology':
-        # Для психологов - нормальное распределение
-        repeat_mean = (repeat_min + repeat_max) / 2
-        repeat_std = (repeat_max - repeat_min) / 6
-        repeat = torch.normal(repeat_mean, repeat_std, size=(scenarios,), device=device)
-    elif business_type == 'cafe':
-        # Для кофейни - нормальное распределение с пиком на средних значениях
-        repeat_mean = (repeat_min + repeat_max) / 2
-        repeat_std = (repeat_max - repeat_min) / 8
-        repeat = torch.normal(repeat_mean, repeat_std, size=(scenarios,), device=device)
-    elif business_type == 'indie_dev':
-        # Для инди-игр - экспоненциальное распределение (большинство 1, некоторые 2+)
-        lambda_param = 0.8
-        repeat = torch.distributions.Exponential(lambda_param).sample((scenarios,)).to(device)
-        repeat = repeat * (repeat_max - repeat_min) + repeat_min
-    elif business_type == 'targetology':
-        # Для таргетологов - равномерное распределение
-        repeat = torch.distributions.Uniform(repeat_min, repeat_max).sample((scenarios,)).to(device)
-    else:
-        # Равномерное распределение
-        repeat = torch.distributions.Uniform(repeat_min, repeat_max).sample((scenarios,)).to(device)
-    
-    repeat = torch.clamp(repeat, min=repeat_min, max=repeat_max)
-    return torch.round(repeat)
+    advices = generate_expert_advice(m, opt_p, final_profit, final_vol, max_sessions, final_cpa, final_ltv)
+    for i, msg in enumerate(advices, 1):
+        print(f" {i}. {msg}")
+    print(f"="*65 + "\n")
 
-def generate_subscription(product_params, scenarios, device):
-    """Генерация длительности подписки"""
-    months_min = product_params['subscription_months_min']
-    months_max = product_params['subscription_months_max']
-    
-    # Экспоненциальное распределение для подписок (большинство короткие)
-    lambda_param = 0.5
-    subscription = torch.distributions.Exponential(lambda_param).sample((scenarios,)).to(device)
-    subscription = subscription * (months_max - months_min) + months_min
-    return torch.clamp(subscription, min=months_min, max=months_max)
-
-def generate_cost_per_lead(market_params, scenarios, device):
-    """Для бизнесов с оплатой за лид"""
-    cost_avg = market_params['cost_per_lead_avg']
-    cost_std = market_params.get('cost_per_lead_std', cost_avg * 0.3)
-    cost = torch.normal(cost_avg, cost_std, size=(scenarios,), device=device)
-    return torch.clamp(cost, min=cost_avg*0.5, max=cost_avg*1.5)
-
-def generate_two_stage_conversion(product_params, scenarios, device):
-    """Для двухэтапной воронки (клик → лид → продажа)"""
-    lead_conv = torch.distributions.Uniform(
-        product_params['conversion_to_lead_min'],
-        product_params['conversion_to_lead_max']
-    ).sample((scenarios,)).to(device)
-    
-    sale_conv = torch.distributions.Uniform(
-        product_params.get('conversion_to_sale_min', 0.05),
-        product_params.get('conversion_to_sale_max', 0.15)
-    ).sample((scenarios,)).to(device)
-    
-    return lead_conv * sale_conv
-
-def filter_realistic_scenarios(conv_field, cpc_field, sales, profits, business_type, product_params):
-    """Фильтрация реалистичных сценариев"""
-    if business_type == 'detailing':
-        return (
-            (conv_field >= 0.005) & (conv_field <= 0.05) &
-            (cpc_field >= 80) & (cpc_field <= 400) &
-            (sales >= 1.0) &
-            (profits > -200000) & (profits < 5000000) &  # Увеличен максимум
-            torch.isfinite(profits)
-        )
-    elif business_type == 'psychology':
-        return (
-            (conv_field >= 0.005) & (conv_field <= 0.05) &
-            (cpc_field >= 80) & (cpc_field <= 400) &
-            (sales >= 0.5) &
-            (profits > -100000) & (profits < 1000000) &  # Увеличен максимум
-            torch.isfinite(profits)
-        )
-    elif business_type == 'subscription':
-        return (
-            (conv_field >= 0.005) & (conv_field <= 0.1) &
-            (cpc_field >= 50) & (cpc_field <= 500) &
-            (sales >= 0.5) &
-            (profits > -50000) & (profits < 500000) &  # Увеличен максимум
-            torch.isfinite(profits)
-        )
-    elif business_type == 'indie_dev':
-        return (
-            (conv_field >= 0.005) & (conv_field <= 0.1) &
-            (cpc_field >= 30) & (cpc_field <= 100) &
-            (sales >= 0.5) &
-            (profits > -100000) & (profits < 2000000) &
-            torch.isfinite(profits)
-        )
-    elif business_type == 'cafe':
-        return (
-            (conv_field >= 0.01) & (conv_field <= 0.1) &
-            (cpc_field >= 50) & (cpc_field <= 200) &
-            (sales >= 0.5) &
-            (profits > -50000) & (profits < 300000) &
-            torch.isfinite(profits)
-        )
-    else:
-        return (
-            (conv_field >= 0.005) & (conv_field <= 0.1) &
-            (cpc_field >= 50) & (cpc_field <= 500) &
-            (sales >= 0.5) &
-            torch.isfinite(profits)
-        )
-
-def find_optimal_scenario(profits, ltv_cac_ratio, price_field, realistic_mask, business_type):
-    """Поиск оптимального сценария"""
-    realistic_indices = torch.where(realistic_mask)[0]
-    
-    if len(realistic_indices) == 0:
-        return None
-    
-    realistic_profits = profits[realistic_indices]
-    
-    # Для премиальных услуг приоритет LTV/CAC
-    if business_type in ['detailing', 'subscription', 'premium_service', 'targetology']:
-        high_ltv_mask = ltv_cac_ratio[realistic_indices] > 2.5
-        if high_ltv_mask.any():
-            high_ltv_indices = realistic_indices[high_ltv_mask]
-            # Берем медианную цену среди сценариев с высоким LTV/CAC
-            median_price = torch.median(price_field[high_ltv_indices])
-            price_diffs = torch.abs(price_field[high_ltv_indices] - median_price)
-            closest_idx = torch.argmin(price_diffs)
-            return high_ltv_indices[closest_idx]
-    
-    # Для остальных - максимальная прибыль в реалистичных
-    max_profit_idx = torch.argmax(realistic_profits)
-    return realistic_indices[max_profit_idx]
-
-def display_results(project_name, business_type, realistic_count, success_rate,
-                    median_profit, optimal_idx, price_field, profits, conv_field,
-                    cpc_field, repeat_field, ltv_cac_ratio, unit_margin, budget,
-                    market_params, product_params):
-    """Отображение результатов"""
-    
-    business_names = {
-        'detailing': 'Детейлинг-центр',
-        'psychology': 'Психологическая практика',
-        'subscription': 'Подписка/SaaS',
-        'premium_service': 'Премиум-сервис',
-        'high_cogs_service': 'Сервис с высокими COGS',
-        'low_ticket_service': 'Сервис с низким чеком',
-        'cafe': 'Кофейня',
-        'ecommerce': 'E-commerce',
-        'targetology': 'Услуги таргетолога',
-        'indie_dev': 'Инди-разработка игр'
-    }
-    
-    business_name = business_names.get(business_type, 'Бизнес-проект')
-    
-    click.secho(f"\n🚀 ЭКОНОМИЧЕСКИЙ АНАЛИЗ: {business_name}", fg='cyan', bold=True)
-    click.secho("=" * 65, fg='cyan')
-    
-    click.secho(f"\n📊 БАЗОВЫЕ ПАРАМЕТРЫ:", fg='yellow', bold=True)
-    click.echo(f"  Проект: {project_name}")
-    click.echo(f"  Бюджет на маркетинг: {budget:,.0f} руб.")
-    click.echo(f"  Анализировано сценариев: {realistic_count:,}")
-    
-    click.secho(f"\n📈 КЛЮЧЕВЫЕ МЕТРИКИ:", fg='green', bold=True)
-    click.echo(f"  Вероятность успеха: {success_rate:.1f}%")
-    click.echo(f"  Медианная прибыль: {median_profit:,.0f} руб.")
-    
-    click.secho(f"\n🎯 ОПТИМАЛЬНЫЕ НАСТРОЙКИ:", fg='magenta', bold=True)
-    
-    if optimal_idx is not None and optimal_idx < len(price_field):
-        click.echo(f"  Средний чек: {price_field[optimal_idx].item():,.0f} руб.")
-        click.echo(f"  Ожидаемая прибыль: {profits[optimal_idx].item():,.0f} руб.")
-        click.echo(f"  Конверсия: {conv_field[optimal_idx].item()*100:.2f}%")
-        click.echo(f"  CPC: {cpc_field[optimal_idx].item():.0f} руб.")
-        
-        if torch.max(repeat_field) > 1:
-            click.echo(f"  Повторные продажи: {repeat_field[optimal_idx].item():.1f}")
-        
-        click.echo(f"  LTV/CAC: {ltv_cac_ratio[optimal_idx].item():.2f}")
-        click.echo(f"  Маржа на единицу: {unit_margin[optimal_idx].item():,.0f} руб.")
-    else:
-        click.secho("  Не удалось определить оптимальные параметры", fg='red')
-
-def display_recommendations(business_type, success_rate, ltv_cac, 
-                           optimal_price, realistic_profits, optimal_profit, 
-                           budget, product_params):
-    """Вывод рекомендаций в зависимости от типа бизнеса"""
-    
-    if realistic_profits.numel() == 0:
-        click.secho("\n⚠️  Нет данных для рекомендаций", fg='yellow')
-        return
-    
-    click.secho(f"\n💡 СТРАТЕГИЧЕСКИЕ РЕКОМЕНДАЦИИ:", fg='cyan', bold=True)
-    
-    if business_type == 'detailing':
-        click.secho("  🚗 ДЕТЕЙЛИНГ-ЦЕНТР:", fg='blue', bold=True)
-        if success_rate < 40:
-            click.secho("    ⚠️  РИСК СРЕДНИЙ", fg='yellow')
-            click.echo("    1. Фокус на повторных клиентах (программы лояльности)")
-            click.echo("    2. Оптимизируйте портфель услуг (керамика vs полировка)")
-            click.echo(f"    3. Целевая цена: {optimal_price*0.9:,.0f}-{optimal_price*1.1:,.0f} руб.")
-        else:
-            click.secho("    ✅ УСТОЙЧИВАЯ МОДЕЛЬ", fg='green')
-            click.echo("    1. Расширяйте услуги (тонирование, бронирование)")
-            click.echo("    2. Инвестируйте в оборудование и обучение мастеров")
-            click.echo("    3. Внедряйте CRM для удержания клиентов")
-    
-    elif business_type == 'psychology':
-        click.secho("  🧠 ПСИХОЛОГИЧЕСКАЯ ПРАКТИКА:", fg='magenta', bold=True)
-        if success_rate < 35:
-            click.secho("    ⚠️  ВЫСОКИЙ РИСК", fg='yellow')
-            click.echo("    1. Увеличьте бюджет до 100,000+ руб.")
-            click.echo("    2. Снижайте CPC через контент-маркетинг")
-            click.echo("    3. Повышайте доверие через отзывы и кейсы")
-        else:
-            click.secho("    ✅ ПРИЕМЛЕМЫЙ РИСК", fg='green')
-            click.echo("    1. Оптимизируйте воронку продаж")
-            click.echo("    2. Внедрите пакеты сессий со скидкой")
-            click.echo("    3. Развивайте узкую специализацию")
-    
-    elif business_type == 'subscription':
-        click.secho("  🔄 SAAS/ПОДПИСКА:", fg='green', bold=True)
-        if success_rate < 40:
-            click.secho("    ⚠️  ВЫСОКИЙ РИСК", fg='yellow')
-            click.echo("    1. Снижайте стоимость привлечения (CAC)")
-            click.echo("    2. Улучшайте конверсию на сайте")
-            click.echo("    3. Тестируйте разные ценовые планы")
-        else:
-            click.secho("    ✅ УСТОЙЧИВАЯ МОДЕЛЬ", fg='green')
-            click.echo("    1. Увеличивайте LTV через удержание")
-            click.echo("    2. Добавляйте upsell/cross-sell")
-            click.echo("    3. Автоматизируйте онбординг")
-    
-    elif business_type == 'low_ticket_service' or business_type == 'cafe':
-        click.secho("  ☕ СЕРВИС С НИЗКИМ ЧЕКОМ:", fg='orange', bold=True)
-        if success_rate < 50:
-            click.secho("    ⚠️  СРЕДНИЙ РИСК", fg='yellow')
-            click.echo("    1. Увеличивайте частоту покупок")
-            click.echo("    2. Повышайте средний чек")
-            click.echo("    3. Оптимизируйте операционные расходы")
-        else:
-            click.secho("    ✅ УСТОЙЧИВАЯ МОДЕЛЬ", fg='green')
-            click.echo("    1. Масштабируйте географию")
-            click.echo("    2. Внедряйте программы лояльности")
-            click.echo("    3. Автоматизируйте процессы")
-    
-    elif business_type == 'indie_dev':
-        click.secho("  🎮 ИНДИ-РАЗРАБОТКА ИГР:", fg='purple', bold=True)
-        if success_rate < 30:
-            click.secho("    🔴 ВЫСОКИЙ РИСК", fg='red')
-            click.echo("    1. Увеличьте маркетинговый бюджет")
-            click.echo("    2. Участвуйте в игровых фестивалях")
-            click.echo("    3. Создайте демо-версию для привлечения внимания")
-        else:
-            click.secho("    🟢 ПЕРСПЕКТИВНАЯ МОДЕЛЬ", fg='green')
-            click.echo("    1. Инвестируйте в качественный трейлер")
-            click.echo("    2. Сотрудничайте с игровыми блогерами")
-            click.echo("    3. Рассмотрите ранний доступ (Early Access)")
-    
-    elif business_type == 'targetology':
-        click.secho("  🎯 УСЛУГИ ТАРГЕТОЛОГА:", fg='blue', bold=True)
-        if success_rate < 40:
-            click.secho("    ⚠️  СРЕДНИЙ РИСК", fg='yellow')
-            click.echo("    1. Снижайте стоимость лида через оптимизацию")
-            click.echo("    2. Повышайте конверсию в продажу")
-            click.echo("    3. Создайте портфолио с кейсами")
-        else:
-            click.secho("    ✅ ПРИБЫЛЬНАЯ МОДЕЛЬ", fg='green')
-            click.echo("    1. Развивайте репутацию эксперта")
-            click.echo("    2. Внедряйте реферальную программу")
-            click.echo("    3. Создайте курсы/обучение как дополнительный доход")
-    
-    else:
-        if success_rate < 30:
-            click.secho("    🔴 ВЫСОКИЙ РИСК", fg='red')
-            click.echo(f"    1. Увеличьте бюджет (минимум {budget*1.5:,.0f} руб.)")
-            click.echo("    2. Снижайте стоимость привлечения")
-            click.echo("    3. Тестируйте разные ценовые точки")
-        elif success_rate < 60:
-            click.secho("    🟡 СРЕДНИЙ РИСК", fg='yellow')
-            click.echo("    1. Оптимизируйте LTV через удержание")
-            click.echo("    2. Улучшайте конверсию на сайте")
-            click.echo("    3. Тестируйте новые каналы привлечения")
-        else:
-            click.secho("    🟢 НИЗКИЙ РИСК", fg='green')
-            click.echo("    1. Масштабируйте успешные каналы")
-            click.echo("    2. Инвестируйте в автоматизацию")
-            click.echo("    3. Расширяйте продуктовую линейку")
-    
-    # Рекомендации по LTV/CAC
-    if ltv_cac > 0:
-        if ltv_cac < 2.5:
-            click.secho(f"\n⚠️  LTV/CAC {ltv_cac:.1f} ниже нормы (3.0+)", fg='yellow')
-            click.echo("   Меры по улучшению:")
-            click.echo("   1. Увеличивайте средний чек")
-            click.echo("   2. Повышайте retention клиентов")
-            click.echo("   3. Снижайте стоимость привлечения")
-        elif ltv_cac < 4.0:
-            click.secho(f"\n✅ LTV/CAC {ltv_cac:.1f} на хорошем уровне", fg='green')
-        else:
-            click.secho(f"\n🎯 ОТЛИЧНЫЙ LTV/CAC {ltv_cac:.1f}", fg='cyan')
-
-def create_visualization(project_name, business_type, realistic_mask,
-                        price_field, profits, conv_field, cpc_field,
-                        repeat_field, ltv_cac_ratio, budget):
-    """Создание визуализации"""
-    
-    realistic_indices = torch.where(realistic_mask)[0]
-    
-    if len(realistic_indices) == 0:
-        click.secho("⚠️  Нет данных для визуализации", fg='yellow')
-        return
-    
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    
-    sample_size = min(5000, len(realistic_indices))
-    sample_indices = np.random.choice(len(realistic_indices), sample_size, replace=False)
-    
-    sample_profits = profits[realistic_indices][sample_indices].cpu().numpy()
-    sample_prices = price_field[realistic_indices][sample_indices].cpu().numpy()
-    sample_ltv_cac = ltv_cac_ratio[realistic_indices][sample_indices].cpu().numpy()
-    sample_repeats = repeat_field[realistic_indices][sample_indices].cpu().numpy()
-    
-    # 1. Основной график прибыли
-    scatter = axes[0, 0].scatter(sample_prices, sample_profits, 
-                                c=sample_ltv_cac, cmap='RdYlGn',
-                                alpha=0.6, s=20, vmin=0, vmax=5)
-    axes[0, 0].axhline(0, color='black', linestyle='-', alpha=0.5)
-    axes[0, 0].set_xlabel("Цена/чек (руб)")
-    axes[0, 0].set_ylabel("Прибыль (руб)")
-    axes[0, 0].set_title("Прибыль vs Цена")
-    axes[0, 0].grid(True, alpha=0.3)
-    plt.colorbar(scatter, ax=axes[0, 0]).set_label('LTV/CAC')
-    
-    # 2. Распределение прибыли
-    axes[0, 1].hist(sample_profits, bins=30, color='skyblue', edgecolor='black', alpha=0.7)
-    axes[0, 1].axvline(0, color='red', linestyle='-', linewidth=2)
-    axes[0, 1].set_xlabel("Прибыль (руб)")
-    axes[0, 1].set_ylabel("Частота")
-    axes[0, 1].set_title("Распределение прибыли")
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # 3. Влияние повторных продаж
-    if np.max(sample_repeats) > 1:
-        axes[1, 0].scatter(sample_repeats, sample_profits, alpha=0.5, s=20)
-        axes[1, 0].axhline(0, color='black', linestyle='-', alpha=0.5)
-        axes[1, 0].set_xlabel("Повторные продажи")
-        axes[1, 0].set_ylabel("Прибыль (руб)")
-        axes[1, 0].set_title("Влияние LTV на прибыль")
-        axes[1, 0].grid(True, alpha=0.3)
-    else:
-        axes[1, 0].axis('off')
-    
-    # 4. Корреляция LTV/CAC с прибылью
-    axes[1, 1].scatter(sample_ltv_cac, sample_profits, alpha=0.5, s=20)
-    axes[1, 1].axhline(0, color='black', linestyle='-', alpha=0.5)
-    axes[1, 1].axvline(2.5, color='red', linestyle='--', alpha=0.7)
-    axes[1, 1].axvline(3.0, color='green', linestyle='--', alpha=0.7)
-    axes[1, 1].set_xlabel("LTV/CAC")
-    axes[1, 1].set_ylabel("Прибыль (руб)")
-    axes[1, 1].set_title("Зависимость прибыли от LTV/CAC")
-    axes[1, 1].grid(True, alpha=0.3)
-    
-    business_titles = {
-        'detailing': 'Детейлинг-центр',
-        'psychology': 'Психологическая практика',
-        'subscription': 'SaaS/Подписка',
-        'low_ticket_service': 'Сервис с низким чеком',
-        'cafe': 'Кофейня',
-        'indie_dev': 'Инди-игра',
-        'targetology': 'Услуги таргетолога',
-        'ecommerce': 'E-commerce'
-    }
-    
-    title = business_titles.get(business_type, 'Бизнес-анализ')
-    plt.suptitle(f"{title} | Бюджет: {budget:,.0f} руб.", 
-                fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    
-    output_image = f"{project_name}_{business_type}_analysis.png"
-    plt.savefig(output_image, dpi=150, bbox_inches='tight')
-    click.secho(f"\n📊 График сохранен как: {output_image}", fg='yellow')
-    plt.close(fig)
-
-def run_optimization(business_type, budget, revenue, effective_budget,
-                    realistic_mask, price_field, conv_field, cpc_field,
-                    repeat_field, product_params, realistic_profits):
-    """Оптимизация параметров"""
-    
-    click.secho(f"\n🔍 АНАЛИЗ ОПТИМИЗАЦИИ:", fg='cyan', bold=True)
-    
-    if not realistic_mask.any():
-        click.secho("  ⚠️  Нет реалистичных сценариев для оптимизации", fg='yellow')
-        return
-    
-    # Тестируем разные бюджеты
-    budgets = [budget * 0.5, budget, budget * 1.5, budget * 2]
-    found_optimal = False
-    
-    for test_budget in budgets:
-        test_effective = test_budget * 0.85
-        test_profits = (revenue / effective_budget * test_effective) - test_effective
-        test_success = (test_profits[realistic_mask] > 0).sum().item() / realistic_mask.sum().item() * 100
-        
-        if test_success >= 50:
-            click.secho(f"  ✅ Бюджет {test_budget:,.0f} руб. → {test_success:.1f}% успешности", fg='green')
-            
-            # Находим оптимальную цену для этого бюджета
-            test_best_idx = torch.argmax(test_profits[realistic_mask])
-            realistic_indices = torch.where(realistic_mask)[0]
-            best_idx = realistic_indices[test_best_idx]
-            
-            click.echo(f"     • Оптимальная цена: {price_field[best_idx].item():,.0f} руб.")
-            click.echo(f"     • Конверсия: {conv_field[best_idx].item()*100:.2f}%")
-            click.echo(f"     • CPC: {cpc_field[best_idx].item():.0f} руб.")
-            if torch.max(repeat_field) > 1:
-                click.echo(f"     • Повторные: {repeat_field[best_idx].item():.1f}")
-            
-            found_optimal = True
-            break
-    
-    if not found_optimal:
-        click.secho(f"  ⚠️  Даже при {budgets[-1]:,.0f} руб. успешность < 50%", fg='yellow')
-        click.echo("     • Необходимо улучшать конверсию или снижать стоимость привлечения")
-
-if __name__ == '__main__':
-    run_universal_economy()
+if __name__ == "__main__":
+    run_optimization()
