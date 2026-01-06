@@ -1,0 +1,17 @@
+# economy_config.yaml
+
+market_params:
+  budget: 1000000.0          # Рекламный бюджет (руб)
+  cpc_avg: 25.0              # Средняя цена клика (CPC)
+  cpc_stdev: 5.0             # Стандартное отклонение CPC (рыночный риск)
+  scenarios_count: 2000000   # Количество GPU-сценариев
+
+product_params:
+  conversion_min: 0.01       # Мин. конверсия
+  conversion_max: 0.05       # Макс. конверсия
+  base_cogs: 500.0           # Базовая себестоимость
+  tax_rate: 0.06             # Налоговая ставка (6%)
+  logistics_base: 150.0      # Базовая логистика
+  logistics_per_price: 0.02  # Логистика как % от цены товара
+  price_range_min: 1000      # Мин. цена для теста
+  price_range_max: 10000     # Макс. цена для теста
