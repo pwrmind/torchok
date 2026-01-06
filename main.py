@@ -149,7 +149,7 @@ def run_psychologist_economy(config, plot):
     }
     
     # --- ВЫВОД РЕЗУЛЬТАТОВ ---
-    click.secho(f"\n🧠 АНАЛИЗ ПРАКТИКИ ПСИХОЛОГА", fg='cyan', bold=True)
+    click.secho(f"\n🧠 АНАЛИЗ", fg='cyan', bold=True)
     click.secho("=" * 60, fg='cyan')
     
     click.secho(f"\n📊 ОБЩАЯ СТАТИСТИКА ({realistic_count:,} сценариев):", fg='yellow', bold=True)
@@ -273,7 +273,7 @@ def run_psychologist_economy(config, plot):
         axes[1, 1].legend()
         axes[1, 1].grid(True, alpha=0.3)
         
-        plt.suptitle(f"Анализ практики психолога (бюджет: {m_p['budget']:,.0f} руб.)", 
+        plt.suptitle(f"Анализ (бюджет: {m_p['budget']:,.0f} руб.)", 
                     fontsize=16, fontweight='bold')
         plt.tight_layout()
         
