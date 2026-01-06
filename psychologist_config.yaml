@@ -1,28 +1,23 @@
-# psychologist_config_enhanced.yaml
+# psychologist_realistic.yaml
 market_params:
-  budget: 50000.0
-  cpc_avg: 180.0
-  cpc_stdev: 45.0
-  scenarios_count: 1000000  # Уменьшено для скорости, но достаточно для точности
+  budget: 80000.0            # Увеличено для реалистичности
+  cpc_avg: 220.0             # Более реалистичный CPC
+  cpc_stdev: 60.0            # Умеренная волатильность
+  scenarios_count: 500000    # Достаточно для анализа
 
 product_params:
-  # Воронка привлечения
+  # Конверсия (уже учтено в коде через логнормальное распределение)
   conversion_min: 0.008
-  conversion_max: 0.025
+  conversion_max: 0.035
   
-  # Экономика сессии
-  base_cogs: 800.0
+  # Экономика
+  base_cogs: 1000.0          # Аренда + комиссия сервисов
   tax_rate: 0.06
   
-  # LTV с более реалистичным распределением
+  # Ценовой диапазон
+  price_range_min: 2500      # Реалистичный минимум
+  price_range_max: 6000      # Премиум + специализация
+  
+  # LTV (комментируем, так как используется в коде)
   repeat_sessions_min: 2.0
   repeat_sessions_max: 15.0
-  repeat_sessions_mode: 4.0  # Мода распределения
-  
-  # Ценовой диапазон
-  price_range_min: 2000
-  price_range_max: 5000
-  
-  # Новые параметры для бета-распределения LTV
-  ltv_beta_alpha: 2.0
-  ltv_beta_beta: 5.0
