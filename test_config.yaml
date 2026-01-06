@@ -1,0 +1,16 @@
+# test_config.yaml
+market_params:
+  budget: 1000000.0          # Бюджет 1 млн
+  cpc_avg: 100.0             # Цена клика ровно 100
+  cpc_stdev: 0.0             # Колебаний нет
+  scenarios_count: 1000000   # 1 млн сценариев
+
+product_params:
+  conversion_min: 0.10       # Конверсия ровно 10%
+  conversion_max: 0.10       
+  base_cogs: 0.0             # Расходов нет
+  tax_rate: 0.0              # Налогов нет
+  repeat_sessions_min: 1
+  repeat_sessions_max: 1
+  price_range_min: 2000      # Цена ровно 2000
+  price_range_max: 2000
