@@ -2,66 +2,68 @@ import torch
 import click
 import yaml
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 @click.command()
-@click.option('--config', default='targetologist_config.yaml', help='Путь к YAML файлу')
-@click.option('--plot', is_flag=True, help='Сгенерировать график')
-def run_holo_economy_final(config, plot):
+@click.option('--config', required=True, help='Путь к YAML файлу (например, detailing.yaml)')
+@click.option('--plot', is_flag=True, help='Сгенерировать график ландшафта прибыли')
+def run_holo_economy(config, plot):
+    # Извлекаем имя конфига для именования файлов (напр. "detailing" из "detailing.yaml")
+    config_path = Path(config)
+    project_name = config_path.stem 
+
     with open(config, 'r', encoding='utf-8') as f:
         params = yaml.safe_load(f)
     
     m_p, p_p = params['market_params'], params['product_params']
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    scenarios = m_p['scenarios_count']
+    scenarios = int(m_p['scenarios_count'])
 
-    # --- Гибкая генерация поля конверсии (Сингум) ---
+    # --- Универсальная генерация полей ---
     if 'conversion_to_lead_min' in p_p:
-        # Модель таргетолога: Лид -> Продажа
-        conv_leads = p_p['conversion_to_lead_min'] + torch.rand(scenarios, device=device) * (p_p['conversion_to_lead_max'] - p_p['conversion_to_lead_min'])
-        conv_sales = p_p['conversion_to_sale_min'] + torch.rand(scenarios, device=device) * (p_p['conversion_to_sale_max'] - p_p['conversion_to_sale_min'])
-        conv_field = conv_leads * conv_sales
+        c_l = torch.distributions.Uniform(p_p['conversion_to_lead_min'], p_p['conversion_to_lead_max']).sample((scenarios,)).to(device)
+        c_s = torch.distributions.Uniform(p_p['conversion_to_sale_min'], p_p['conversion_to_sale_max']).sample((scenarios,)).to(device)
+        conv_field = c_l * c_s
     else:
-        # Базовая модель (психолог)
-        conv_field = p_p['conversion_min'] + torch.rand(scenarios, device=device) * (p_p['conversion_max'] - p_p['conversion_min'])
+        conv_field = torch.distributions.Uniform(p_p['conversion_min'], p_p['conversion_max']).sample((scenarios,)).to(device)
 
-    # --- Генерация остальных полей ---
-    cpc_field = torch.normal(m_p['cpc_avg'], m_p['cpc_stdev'], (scenarios,), device=device)
-    price_field = torch.linspace(p_p['price_range_min'], p_p['price_range_max'], scenarios, device=device)
-    
-    # LTV: если не задано (для таргетолога), считаем 1 продажу
-    sess_min = p_p.get('repeat_sessions_min', 1)
-    sess_max = p_p.get('repeat_sessions_max', 1)
-    sessions_field = sess_min + torch.rand(scenarios, device=device) * (sess_max - sess_min)
+    cpc_field = torch.normal(m_p['cpc_avg'], m_p['cpc_stdev'], size=(scenarios,), device=device).clamp(min=1.0)
+    price_field = torch.distributions.Uniform(p_p['price_range_min'], p_p['price_range_max']).sample((scenarios,)).to(device)
 
-    # --- Расчет модели ---
-    def calculate(prices, cpc, conv, sess):
-        new_clients = (m_p['budget'] / cpc) * conv
-        total_revenue = new_clients * sess * prices
-        unit_costs = (prices * p_p['tax_rate']) + p_p['base_cogs']
-        total_costs = (new_clients * sess * unit_costs) + m_p['budget']
-        profit = total_revenue - total_costs
-        return profit
-
+    # --- Универсальный расчет ---
     with torch.inference_mode():
-        profits = calculate(price_field, cpc_field, conv_field, sessions_field)
+        sales = (m_p['budget'] / cpc_field) * conv_field
+        unit_margin = price_field - (price_field * p_p['tax_rate']) - p_p['base_cogs']
+        profits = (sales * unit_margin) - m_p['budget']
 
-    # --- Вывод ---
+    # --- Аналитика ---
     best_idx = torch.argmax(profits)
     success_rate = (torch.sum(profits > 0).item() / scenarios) * 100
+    opt_price = price_field[best_idx].item()
+    opt_profit = profits[best_idx].item()
 
-    click.secho(f"\n✅ Расчет завершен успешно!", fg='green')
-    click.echo(f"Оптимальная цена услуги: {price_field[best_idx]:.2f} руб.")
-    click.echo(f"Макс. потенциальная прибыль: {profits[best_idx]:.2f} руб.")
+    # Динамический вывод в консоль
+    click.secho(f"\n✅ Расчет проекта '{project_name}' завершен!", fg='green', bold=True)
+    click.echo(f"Оптимальная цена: {opt_price:.2f} руб.")
+    click.echo(f"Ожидаемая прибыль: {opt_profit:.2f} руб.")
     click.echo(f"Устойчивость модели: {success_rate:.2f}%")
 
+    # --- Динамическая визуализация ---
     if plot:
+        output_image = f"{project_name}_profit_landscape.png"
         plt.figure(figsize=(10, 6))
-        plt.scatter(price_field.cpu().numpy()[::500], profits.cpu().numpy()[::500], alpha=0.1, c='blue')
-        plt.title("Ландшафт прибыли (Holo-Economy 2026)")
-        plt.xlabel("Цена услуги (руб)")
+        indices = torch.randint(0, scenarios, (5000,))
+        x = price_field[indices].cpu().numpy()
+        y = profits[indices].cpu().numpy()
+        
+        plt.scatter(x, y, alpha=0.3, c=y, cmap='viridis')
+        plt.axhline(0, color='red', linestyle='--')
+        plt.title(f"Ландшафт прибыли: {project_name.upper()} (2026)")
+        plt.xlabel("Цена (руб)")
         plt.ylabel("Прибыль (руб)")
-        plt.savefig('targetologist_profit.png')
-        click.secho("График 'targetologist_profit.png' создан.", fg='yellow')
+        
+        plt.savefig(output_image)
+        click.secho(f"График сохранен как: {output_image}", fg='yellow')
 
 if __name__ == '__main__':
-    run_holo_economy_final()
+    run_holo_economy()
