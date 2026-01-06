@@ -1,0 +1,19 @@
+# cafe_config.yaml
+market_params:
+  budget: 80000.0
+  cpc_avg: 90.0
+  cpc_stdev: 20.0
+  scenarios_count: 500000
+
+product_params:
+  conversion_min: 0.02
+  conversion_max: 0.08
+  
+  base_cogs: 150.0  # Себестоимость напитка
+  tax_rate: 0.06
+  
+  repeat_purchases_min: 8.0   # Посещений в месяц
+  repeat_purchases_max: 20.0
+  
+  avg_ticket_min: 350
+  avg_ticket_max: 800
